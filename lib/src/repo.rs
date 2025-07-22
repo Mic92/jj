@@ -22,6 +22,7 @@ use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::slice;
 use std::sync::Arc;
 
@@ -84,6 +85,7 @@ use crate::refs::diff_named_ref_targets;
 use crate::refs::diff_named_remote_refs;
 use crate::refs::merge_ref_targets;
 use crate::refs::merge_remote_refs;
+use crate::resolution_cache::ResolutionCache;
 use crate::revset;
 use crate::revset::RevsetEvaluationError;
 use crate::revset::RevsetExpression;
@@ -122,6 +124,8 @@ pub trait Repo {
 
     fn submodule_store(&self) -> &Arc<dyn SubmoduleStore>;
 
+    fn resolution_cache(&self) -> Arc<ResolutionCache>;
+
     fn resolve_change_id(&self, change_id: &ChangeId) -> Option<Vec<CommitId>> {
         // Replace this if we added more efficient lookup method.
         let prefix = HexPrefix::from_id(change_id);
@@ -144,6 +148,7 @@ pub struct ReadonlyRepo {
     change_id_index: OnceCell<Box<dyn ChangeIdIndex>>,
     // TODO: This should eventually become part of the index and not be stored fully in memory.
     view: View,
+    resolution_cache: OnceCell<Arc<ResolutionCache>>,
 }
 
 impl Debug for ReadonlyRepo {
@@ -237,6 +242,7 @@ impl ReadonlyRepo {
         let submodule_store = Arc::from(submodule_store);
 
         let loader = RepoLoader {
+            repo_path: repo_path.clone(),
             settings: settings.clone(),
             store,
             op_store,
@@ -260,6 +266,7 @@ impl ReadonlyRepo {
             index,
             change_id_index: OnceCell::new(),
             view: root_view,
+            resolution_cache: OnceCell::new(),
         }))
     }
 
@@ -304,6 +311,16 @@ impl ReadonlyRepo {
         self.loader.settings()
     }
 
+    pub fn resolution_cache(&self) -> Arc<ResolutionCache> {
+        self.resolution_cache
+            .get_or_init(|| {
+                let cache_path = self.loader.repo_path().join("resolution_cache");
+                let enabled = self.settings().get_bool("rerere.enabled").unwrap_or(false);
+                Arc::new(ResolutionCache::new(cache_path, enabled))
+            })
+            .clone()
+    }
+
     pub fn start_transaction(self: &Arc<ReadonlyRepo>) -> Transaction {
         let mut_repo = MutableRepo::new(self.clone(), self.readonly_index(), &self.view);
         Transaction::new(mut_repo, self.settings())
@@ -342,6 +359,10 @@ impl Repo for ReadonlyRepo {
 
     fn submodule_store(&self) -> &Arc<dyn SubmoduleStore> {
         self.loader.submodule_store()
+    }
+
+    fn resolution_cache(&self) -> Arc<ResolutionCache> {
+        self.resolution_cache()
     }
 
     fn resolve_change_id_prefix(&self, prefix: &HexPrefix) -> PrefixResolution<Vec<CommitId>> {
@@ -638,6 +659,7 @@ pub enum RepoLoaderError {
 /// a given operation.
 #[derive(Clone)]
 pub struct RepoLoader {
+    repo_path: PathBuf,
     settings: UserSettings,
     store: Arc<Store>,
     op_store: Arc<dyn OpStore>,
@@ -648,6 +670,7 @@ pub struct RepoLoader {
 
 impl RepoLoader {
     pub fn new(
+        repo_path: PathBuf,
         settings: UserSettings,
         store: Arc<Store>,
         op_store: Arc<dyn OpStore>,
@@ -656,6 +679,7 @@ impl RepoLoader {
         submodule_store: Arc<dyn SubmoduleStore>,
     ) -> Self {
         Self {
+            repo_path,
             settings,
             store,
             op_store,
@@ -693,6 +717,7 @@ impl RepoLoader {
             store_factories.load_submodule_store(settings, &repo_path.join("submodule_store"))?,
         );
         Ok(Self {
+            repo_path: repo_path.to_path_buf(),
             settings: settings.clone(),
             store,
             op_store,
@@ -726,6 +751,10 @@ impl RepoLoader {
         &self.submodule_store
     }
 
+    pub fn repo_path(&self) -> &Path {
+        &self.repo_path
+    }
+
     pub fn load_at_head(&self) -> Result<Arc<ReadonlyRepo>, RepoLoaderError> {
         let op = op_heads_store::resolve_op_heads(
             self.op_heads_store.as_ref(),
@@ -754,6 +783,7 @@ impl RepoLoader {
             index,
             change_id_index: OnceCell::new(),
             view,
+            resolution_cache: OnceCell::new(),
         };
         Arc::new(repo)
     }
@@ -822,6 +852,7 @@ impl RepoLoader {
             index,
             change_id_index: OnceCell::new(),
             view,
+            resolution_cache: OnceCell::new(),
         };
         Ok(Arc::new(repo))
     }
@@ -1924,6 +1955,10 @@ impl Repo for MutableRepo {
 
     fn submodule_store(&self) -> &Arc<dyn SubmoduleStore> {
         self.base_repo.submodule_store()
+    }
+
+    fn resolution_cache(&self) -> Arc<ResolutionCache> {
+        self.base_repo.resolution_cache()
     }
 
     fn resolve_change_id_prefix(&self, prefix: &HexPrefix) -> PrefixResolution<Vec<CommitId>> {

@@ -109,6 +109,9 @@ use crate::ref_name::WorkspaceNameBuf;
 use crate::repo_path::RepoPath;
 use crate::repo_path::RepoPathBuf;
 use crate::repo_path::RepoPathComponent;
+use crate::resolution_cache::ResolutionCache;
+use crate::resolution_cache::ResolutionCacheResult;
+use crate::resolution_cache::ResolutionCacheStats;
 use crate::settings::UserSettings;
 use crate::store::Store;
 use crate::tree::Tree;
@@ -1018,6 +1021,7 @@ impl TreeState {
             start_tracking_matcher,
             max_new_file_size,
             conflict_marker_style,
+            ref resolution_cache,
         } = options;
 
         let sparse_matcher = self.sparse_matcher();
@@ -1044,6 +1048,7 @@ impl TreeState {
         let (file_states_tx, file_states_rx) = channel();
         let (untracked_paths_tx, untracked_paths_rx) = channel();
         let (deleted_files_tx, deleted_files_rx) = channel();
+        let (resolution_cache_stats_tx, resolution_cache_stats_rx) = channel();
 
         trace_span!("traverse filesystem").in_scope(|| -> Result<(), SnapshotError> {
             let snapshotter = FileSnapshotter {
@@ -1056,11 +1061,13 @@ impl TreeState {
                 file_states_tx,
                 untracked_paths_tx,
                 deleted_files_tx,
+                resolution_cache_stats_tx,
                 error: OnceLock::new(),
                 progress,
                 max_new_file_size,
                 conflict_marker_style,
                 target_eol_strategy: self.target_eol_strategy.clone(),
+                resolution_cache: resolution_cache.as_ref().map(|rc| rc.as_ref()),
             };
             let directory_to_visit = DirectoryToVisit {
                 dir: RepoPathBuf::root(),
@@ -1077,8 +1084,15 @@ impl TreeState {
             snapshotter.into_result()
         })?;
 
+        // Collect resolution cache stats
+        let mut resolution_cache_stats = ResolutionCacheStats::new();
+        for result in resolution_cache_stats_rx {
+            resolution_cache_stats.add(result);
+        }
+
         let stats = SnapshotStats {
             untracked_paths: untracked_paths_rx.into_iter().collect(),
+            resolution_cache_stats,
         };
         let mut tree_builder = MergedTreeBuilder::new(self.tree_id.clone());
         trace_span!("process tree entries").in_scope(|| {
@@ -1204,11 +1218,13 @@ struct FileSnapshotter<'a> {
     file_states_tx: Sender<(RepoPathBuf, FileState)>,
     untracked_paths_tx: Sender<(RepoPathBuf, UntrackedReason)>,
     deleted_files_tx: Sender<RepoPathBuf>,
+    resolution_cache_stats_tx: Sender<ResolutionCacheResult>,
     error: OnceLock<SnapshotError>,
     progress: Option<&'a SnapshotProgress<'a>>,
     max_new_file_size: u64,
     conflict_marker_style: ConflictMarkerStyle,
     target_eol_strategy: TargetEolStrategy,
+    resolution_cache: Option<&'a ResolutionCache>,
 }
 
 impl FileSnapshotter<'_> {
@@ -1606,7 +1622,7 @@ impl FileSnapshotter<'_> {
             // If the file contained a conflict before and is a normal file on
             // disk, we try to parse any conflict markers in the file into a
             // conflict.
-            let new_file_ids = conflicts::update_from_content(
+            let (new_file_ids, cache_result) = conflicts::update_from_content(
                 &old_file_ids,
                 self.store(),
                 repo_path,
@@ -1615,8 +1631,14 @@ impl FileSnapshotter<'_> {
                 materialized_conflict_data.map_or(MIN_CONFLICT_MARKER_LEN, |data| {
                     data.conflict_marker_len as usize
                 }),
+                self.resolution_cache,
             )
             .await?;
+
+            // Track resolution cache stats
+            if let Some(result) = cache_result {
+                let _ = self.resolution_cache_stats_tx.send(result);
+            }
             match new_file_ids.into_resolved() {
                 Ok(file_id) => {
                     // On Windows, we preserve the executable bit from the merged trees.

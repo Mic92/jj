@@ -312,6 +312,7 @@ diff editing in mind and be a little inaccurate.
             start_tracking_matcher: &EverythingMatcher,
             max_new_file_size: u64::MAX,
             conflict_marker_style,
+            resolution_cache: None,
         })?;
         Ok(output_tree_state.current_tree_id().clone())
     }

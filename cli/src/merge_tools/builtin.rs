@@ -412,13 +412,14 @@ fn apply_diff_builtin(
                 })
             } else if let Some(old_file_ids) = old_value.to_file_merge() {
                 // TODO: should error out if conflicts couldn't be parsed?
-                let new_file_ids = conflicts::update_from_content(
+                let (new_file_ids, _) = conflicts::update_from_content(
                     &old_file_ids,
                     store,
                     path,
                     contents,
                     conflict_marker_style,
                     MIN_CONFLICT_MARKER_LEN, // TODO: use the materialization parameter
+                    right_tree.resolution_cache().map(|rc| rc.as_ref()),
                 )
                 .block_on()?;
                 match new_file_ids.into_resolved() {

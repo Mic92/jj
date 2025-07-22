@@ -290,6 +290,7 @@ pub fn absorb_hunks(
     mut selected_trees: HashMap<CommitId, MergedTreeBuilder>,
 ) -> BackendResult<AbsorbStats> {
     let store = repo.store().clone();
+    let resolution_cache = repo.resolution_cache();
     let mut rewritten_source = None;
     let mut rewritten_destinations = Vec::new();
     let mut num_rebased = 0;
@@ -313,7 +314,9 @@ pub fn absorb_hunks(
             return Ok(());
         };
         // Merge hunks between source parent tree and selected tree
-        let selected_tree_id = tree_builder.write_tree(&store)?;
+        let selected_tree_id = tree_builder
+            .with_resolution_cache(resolution_cache.clone())
+            .write_tree(&store)?;
         let commit_builder = rewriter.rebase()?;
         let destination_tree = store.get_root_tree(commit_builder.tree_id())?;
         let selected_tree = store.get_root_tree(&selected_tree_id)?;

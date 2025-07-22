@@ -16,6 +16,7 @@ use clap_complete::ArgValueCompleter;
 use jj_lib::backend::TreeValue;
 use jj_lib::merged_tree::MergedTreeBuilder;
 use jj_lib::object_id::ObjectId as _;
+use jj_lib::repo::Repo as _;
 use tracing::instrument;
 
 use crate::cli_util::print_unmatched_explicit_paths;
@@ -119,7 +120,9 @@ pub(crate) fn cmd_file_chmod(
         tree_builder.set_or_remove(repo_path, tree_value);
     }
 
-    let new_tree_id = tree_builder.write_tree(store)?;
+    let new_tree_id = tree_builder
+        .with_resolution_cache(tx.repo().resolution_cache())
+        .write_tree(store)?;
     tx.repo_mut()
         .rewrite_commit(&commit)
         .set_tree_id(new_tree_id)

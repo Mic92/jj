@@ -296,8 +296,11 @@ fn run_mergetool_external_single_file(
             output_file_contents.as_slice(),
             conflict_marker_style,
             conflict_marker_len,
+            tree_builder.resolution_cache().map(|rc| rc.as_ref()),
         )
         .block_on()?
+        .0 // Just take the file IDs, ignore resolution cache result for merge
+           // tools
     } else {
         let new_file_id = store
             .write_file(repo_path, &mut output_file_contents.as_slice())

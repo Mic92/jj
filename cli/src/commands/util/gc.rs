@@ -62,5 +62,17 @@ pub fn cmd_util_gc(
     repo.op_store()
         .gc(slice::from_ref(repo.op_id()), keep_newer)?;
     repo.store().gc(repo.index(), keep_newer)?;
+
+    // Garbage collect resolution cache
+    let resolution_cache = repo.resolution_cache();
+    if resolution_cache.is_enabled() {
+        if let Err(e) = resolution_cache.gc(keep_newer) {
+            writeln!(
+                ui.warning_default(),
+                "Failed to garbage collect resolution cache: {e}"
+            )?;
+        }
+    }
+
     Ok(())
 }

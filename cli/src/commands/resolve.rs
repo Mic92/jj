@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::io::Write as _;
+
 use clap_complete::ArgValueCandidates;
 use clap_complete::ArgValueCompleter;
 use itertools::Itertools as _;
@@ -90,7 +92,12 @@ pub(crate) fn cmd_resolve(
         .parse_file_patterns(ui, &args.paths)?
         .to_matcher();
     let commit = workspace_command.resolve_single_rev(ui, &args.revision)?;
-    let tree = commit.tree()?;
+    let mut tree = commit.tree()?;
+    // Attach resolution cache to the tree so that resolutions can be recorded
+    let resolution_cache = workspace_command.repo().resolution_cache();
+    if resolution_cache.is_enabled() {
+        tree = tree.with_resolution_cache(resolution_cache);
+    }
     let conflicts = tree
         .conflicts()
         .filter(|path| matcher.matches(&path.0))
@@ -124,6 +131,28 @@ pub(crate) fn cmd_resolve(
         .rewrite_commit(&commit)
         .set_tree_id(new_tree_id)
         .write()?;
+
+    // Print resolution cache statistics if any
+    if let Ok(new_tree) = new_commit.tree() {
+        let stats = new_tree.resolution_cache_stats();
+        if stats.recorded_resolutions > 0 || stats.recorded_preimages > 0 {
+            if let Some(mut formatter) = ui.status_formatter() {
+                if stats.recorded_resolutions > 0 {
+                    writeln!(
+                        formatter,
+                        "Recorded {} conflict resolution{}",
+                        stats.recorded_resolutions,
+                        if stats.recorded_resolutions == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    )?;
+                }
+            }
+        }
+    }
+
     tx.finish(
         ui,
         format!("Resolve conflicts in commit {}", commit.id().hex()),

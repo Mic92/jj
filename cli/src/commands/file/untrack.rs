@@ -67,7 +67,9 @@ pub(crate) fn cmd_file_untrack(
     for (path, _value) in wc_tree.entries_matching(matcher.as_ref()) {
         tree_builder.set_or_remove(path, Merge::absent());
     }
-    let new_tree_id = tree_builder.write_tree(&store)?;
+    let new_tree_id = tree_builder
+        .with_resolution_cache(tx.repo().resolution_cache())
+        .write_tree(&store)?;
     let new_commit = tx
         .repo_mut()
         .rewrite_commit(&wc_commit)
